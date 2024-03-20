@@ -1,103 +1,111 @@
+# Load necessary libraries
 library(tidyverse)
 library(dplyr)
+library(pwr)
+library(doParallel)
+library(caret)
+library(randomForest)
+library(ranger)
 
-##### Initial Data Manipulation #####
-data = read.csv("~/Documents/bradygiacopelli/csvs/2022SECdata.csv")
+set.seed(69420) 
 
-cleandata = data %>%
-  filter(!TaggedPitchType %in% c("Undefined", "Other", "Knuckleball"))
-
-cleandata = cleandata %>%
-  mutate(Fastball = ifelse(TaggedPitchType %in% c("Sinker", "Fastball", "Cutter"), 1, 0),
-         Offspeed = ifelse(!TaggedPitchType %in% c("Sinker", "Fastball", "Cutter"), 1, 0))
-
-cleandata = cleandata %>%
-  mutate(Whiffable = ifelse(PitchCall %in% c("StrikeSwinging", "InPlay", "FoulBall"), 1, 0))
-
-cleandata = cleandata %>%
+# Read and initially clean the data
+data <- read.csv("~/Documents/bradygiacopelli/csvs/2022SECdata.csv") %>%
+  filter(!TaggedPitchType %in% c("Undefined", "Other", "Knuckleball")) %>%
+  mutate(
+    Fastball = as.integer(TaggedPitchType %in% c("Sinker", "Fastball", "Cutter")),
+    Offspeed = as.integer(!TaggedPitchType %in% c("Sinker", "Fastball", "Cutter")),
+    Whiffable = as.integer(PitchCall %in% c("StrikeSwinging", "InPlay", "FoulBall")),
+    Whiff = as.integer(PitchCall == "StrikeSwinging"),
+    PitchSide = as.integer(PitcherThrows == "Right"),
+    BatSide = as.integer(BatterSide == "Right")
+  ) %>%
   filter(Whiffable == 1)
 
-cleandata = cleandata %>% 
-  mutate(Whiff = ifelse(PitchCall == "StrikeSwinging", 1, 0))
 
-whiff = sum(cleandata$Whiff)/nrow(cleandata)
+# Calculate overall whiff rate
+whiff_rate <- mean(data$Whiff)
 
+# Power Analysis
+fbWhiffRate <- mean(data$Whiff[data$Fastball == 1])
+osWhiffRate <- mean(data$Whiff[data$Offspeed == 1])
 
-##### POWER ANALYSIS #####
-
-library(pwr)
-
-fbWhiff = ifelse(cleandata$Fastball == 1 & cleandata$Whiff == 1, 1, 0)
-osWhiff = ifelse(cleandata$Offspeed == 1 & cleandata$Whiff == 1, 1, 0)
-
-fbWhiffRate = sum(fbWhiff) / sum(cleandata$Fastball)
-osWhiffRate = sum(osWhiff) / sum(cleandata$Offspeed)
-
-# Calculate effect size using the proportions
-effectSize = ES.h(p1 = fbWhiffRate, p2 = osWhiffRate)
-
-# Perform power analysis to find required sample size for given power and significance level
-powerAnalysisResult = pwr.2p.test(h = effectSize, sig.level = 0.05, power = 0.80, alternative = "two.sided")
-
+effectSize <- ES.h(p1 = fbWhiffRate, p2 = osWhiffRate)
+powerAnalysisResult <- pwr.2p.test(h = effectSize, sig.level = 0.05, power = 0.80, alternative = "two.sided")
 print(powerAnalysisResult)
 
-ofb = fbWhiffRate/(1-fbWhiffRate)
-oos = osWhiffRate/(1-osWhiffRate)
+# Odds Ratio Calculation
+ofb <- fbWhiffRate / (1 - fbWhiffRate)
+oos <- osWhiffRate / (1 - osWhiffRate)
+OR <- ofb / oos
 
-OR = ofb/oos
-
-##### Generalized Linear Model #####
-
-#PURPOSE The purpose of the assignment is to apply generalized linear modeling using your own final project data set and practice scientific report writing. 
-# This Model uses Whiff rate as the response. Pitch type, batter handedness, and pitcher handedness being the predictors
-# All 4 of these variables are all binary. 
-
-cleandata$Whiff
-cleandata$PitchSide
-cleandata$BatSide
-cleandata$Fastball
-
-# Fitting a GLM with logistic regression
-model_glm = glm(Whiff ~ PitchSide + BatSide + Fastball, data = cleandata, family = binomial)
-
-# Viewing the summary of the model
+# Generalized Linear Model (GLM) for Whiff Prediction
+model_glm <- glm(Whiff ~ PitchSide + BatSide + Fastball, data = data, family = binomial)
 summary(model_glm)
 
-# Now we want to create 4 different models, one for each of the 4 possible combinations of batter and pitcher handedness.
-# PitchSide (1 = Right, 0 = Left) BatSide (1 = Right, 0 = Left) Fastball (1 = Fastball, 0 = Offspeed)
+# GLMs for each combination of batter and pitcher handedness
+combinations <- expand.grid(PitchSide = c(0, 1), BatSide = c(0, 1))
+models <- lapply(1:nrow(combinations), function(i) {
+  subset <- combinations[i, ]
+  data_sub <- data %>%
+    filter(PitchSide == subset$PitchSide & BatSide == subset$BatSide)
+  
+  model <- glm(Whiff ~ Fastball, data = data_sub, family = binomial)
+  summary(model)
+  return(list(subset = subset, model_summary = summary(model)))
+})
 
-# Right handed batter, right handed pitcher
-cleandata_rr = cleandata %>%
-  filter(PitchSide == 1 & BatSide == 1)
+##### RANDOM FOREST GENERATION ######
 
-model_rr = glm(Whiff ~ Fastball, data = cleandata_rr, family = binomial)
+# Selecting relevant features and the target variable
+data_rf <- data %>%
+  select(PitchSide, BatSide, TaggedPitchType, RelSpeed, SpinRate, SpinAxis, InducedVertBreak, HorzBreak, Whiff)
 
-summary(model_rr)
-# Right handed batter, left handed pitcher
+# Convert categorical variables to factors
+data_rf$PitchSide <- as.factor(data_rf$PitchSide)
+data_rf$BatSide <- as.factor(data_rf$BatSide)
+data_rf$TaggedPitchType <- as.factor(data_rf$TaggedPitchType)
+data_rf$Whiff <- factor(data_rf$Whiff, levels = c("0", "1"), labels = c("Non-Whiff", "Whiff"))
 
-cleandata_rl = cleandata %>%
-  filter(PitchSide == 0 & BatSide == 1)
 
-model_rl = glm(Whiff ~ Fastball, data = cleandata_rl, family = binomial)
+# Handling missing values (simple example by omitting them)
+data_rf <- na.omit(data_rf)
 
-summary(model_rl)
+training_indices <- sample(1:nrow(data_rf), 0.05 * nrow(data_rf))
+train_data <- data_rf[training_indices, ]
+test_data <- data_rf[-training_indices, ]
 
-# Left handed batter, right handed pitcher
+simple_rf_model <- ranger(
+  formula = Whiff ~ ., 
+  data = train_data,
+  mtry = round(sqrt(ncol(train_data)-1)),
+  min.node.size = 5,
+  num.trees = 500,
+  importance = 'impurity',
+  verbose = TRUE
+)
 
-cleandata_lr = cleandata %>%
-  filter(PitchSide == 1 & BatSide == 0)
+# You can print the model summary to see the results
+print(simple_rf_model)
 
-model_lr = glm(Whiff ~ Fastball, data = cleandata_lr, family = binomial)
+# Checking the importance of variables
+importance(simple_rf_model)
 
-summary(model_lr)
+# Predicting on the test dataset
+predictions <- predict(simple_rf_model, data = test_data)
 
-# Left handed batter, left handed pitcher
+# Converting probabilities to binary outcomes based on a 0.5 threshold
+# This step is necessary if your model is predicting probabilities for each class
+predicted_numeric <- as.numeric(as.character(predictions$predictions)) - 1
 
-cleandata_ll = cleandata %>%
-  filter(PitchSide == 0 & BatSide == 0)
+preds = predictions$predictions
 
-model_ll = glm(Whiff ~ Fastball, data = cleandata_ll, family = binomial)
+# Actual values, ensuring they are numeric for direct comparison
+# If your actual values are factors, you might need to adjust this
+actual_numeric <- test_data$Whiff
 
-summary(model_ll)
+# Calculate accuracy
+accuracy <- mean(preds == actual_numeric)
+print(paste("Accuracy:", accuracy))
 
 
