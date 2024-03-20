@@ -17,8 +17,7 @@ data <- read.csv("~/Documents/bradygiacopelli/csvs/2022SECdata.csv") %>%
     Offspeed = as.integer(!TaggedPitchType %in% c("Sinker", "Fastball", "Cutter")),
     Whiffable = as.integer(PitchCall %in% c("StrikeSwinging", "InPlay", "FoulBall")),
     Whiff = as.integer(PitchCall == "StrikeSwinging"),
-    PitchSide = as.integer(PitcherThrows == "Right"),
-    BatSide = as.integer(BatterSide == "Right")
+    PitchBatSide = as.integer(PitcherThrows == BatterSide)
   ) %>%
   filter(Whiffable == 1)
 
@@ -40,7 +39,7 @@ oos <- osWhiffRate / (1 - osWhiffRate)
 OR <- ofb / oos
 
 # Generalized Linear Model (GLM) for Whiff Prediction
-model_glm <- glm(Whiff ~ PitchSide + BatSide + Fastball, data = data, family = binomial)
+model_glm <- glm(Whiff ~ PitchBatSide + Fastball, data = data, family = binomial)
 summary(model_glm)
 
 # GLMs for each combination of batter and pitcher handedness
@@ -59,53 +58,69 @@ models <- lapply(1:nrow(combinations), function(i) {
 
 # Selecting relevant features and the target variable
 data_rf <- data %>%
-  select(PitchSide, BatSide, TaggedPitchType, RelSpeed, SpinRate, SpinAxis, InducedVertBreak, HorzBreak, Whiff)
+  select(PitchBatSide, TaggedPitchType, RelSpeed, SpinRate, SpinAxis, InducedVertBreak, HorzBreak, Whiff)
+
 
 # Convert categorical variables to factors
-data_rf$PitchSide <- as.factor(data_rf$PitchSide)
-data_rf$BatSide <- as.factor(data_rf$BatSide)
+data_rf$PitchBatSide <- as.factor(data_rf$PitchBatSide)
 data_rf$TaggedPitchType <- as.factor(data_rf$TaggedPitchType)
-data_rf$Whiff <- factor(data_rf$Whiff, levels = c("0", "1"), labels = c("Non-Whiff", "Whiff"))
-
+data_rf$SpinAxis <- as.numeric(data_rf$SpinAxis)
 
 # Handling missing values (simple example by omitting them)
 data_rf <- na.omit(data_rf)
+
 
 training_indices <- sample(1:nrow(data_rf), 0.05 * nrow(data_rf))
 train_data <- data_rf[training_indices, ]
 test_data <- data_rf[-training_indices, ]
 
-simple_rf_model <- ranger(
-  formula = Whiff ~ ., 
-  data = train_data,
+train_data$Whiff <- factor(train_data$Whiff, levels = c("0", "1"), labels = c("NonWhiff", "Whiff"))
+
+# Make sure to apply the same transformation to your test dataset if you're going to use it later
+test_data$Whiff <- factor(test_data$Whiff, levels = c("0", "1"), labels = c("NonWhiff", "Whiff"))
+
+
+train_control <- trainControl(method="cv", number=3, savePredictions = "final", classProbs = TRUE)
+
+# Defining a tuning grid that includes mtry, splitrule, and min.node.size for the ranger package
+tune_grid <- expand.grid(
   mtry = round(sqrt(ncol(train_data)-1)),
-  min.node.size = 5,
-  num.trees = 500,
-  importance = 'impurity',
-  verbose = TRUE
+  splitrule = c("gini", "extratrees"),
+  min.node.size = c(1, 3, 5)
 )
 
-# You can print the model summary to see the results
-print(simple_rf_model)
+simple_rf_model <- train(
+  Whiff ~ ., 
+  data = train_data,
+  method = "ranger",
+  trControl = train_control,
+  tuneGrid = tune_grid,
+  importance = 'impurity'
+)
 
-# Checking the importance of variables
-importance(simple_rf_model)
+print(simple_rf_model$bestTune)
 
-# Predicting on the test dataset
-predictions <- predict(simple_rf_model, data = test_data)
+# Directly print the accuracy of the best model
+best_accuracy <- max(simple_rf_model$results$Accuracy)
+print(paste("Best Accuracy:", best_accuracy))
 
-# Converting probabilities to binary outcomes based on a 0.5 threshold
-# This step is necessary if your model is predicting probabilities for each class
-predicted_numeric <- as.numeric(as.character(predictions$predictions)) - 1
+# Creating a new data frame for the adjusted prediction
+new_pitch <- data.frame(
+  PitchBatSide = as.factor(1), # Example where pitcher and batter handedness are the same
+  TaggedPitchType = "Fastball",
+  RelSpeed = 90,
+  SpinRate = 2000,
+  SpinAxis = 200,
+  InducedVertBreak = 17,
+  HorzBreak = 6
+)
 
-preds = predictions$predictions
+# Making the prediction with the adjusted model
+predictions <- predict(simple_rf_model, new_pitch, type="prob")
 
-# Actual values, ensuring they are numeric for direct comparison
-# If your actual values are factors, you might need to adjust this
-actual_numeric <- test_data$Whiff
+# Extract probabilities of the class of interest, assuming it's the second column
+prob_A_wins <- predictions[,2]
 
-# Calculate accuracy
-accuracy <- mean(preds == actual_numeric)
-print(paste("Accuracy:", accuracy))
+print(prob_A_wins)
 
 
