@@ -1,4 +1,3 @@
-# Load necessary libraries
 library(tidyverse)
 library(dplyr)
 library(pwr)
@@ -63,7 +62,7 @@ data_rf$HorzBreak = abs(data_rf$HorzBreak)
 data_rf <- na.omit(data_rf)
 
 
-training_indices <- sample(1:nrow(data_rf), 0.2 * nrow(data_rf))
+training_indices <- sample(1:nrow(data_rf), 0.5 * nrow(data_rf))
 train_data <- data_rf[training_indices, ]
 test_data <- data_rf[-training_indices, ]
 
@@ -80,7 +79,7 @@ tune_grid <- expand.grid(
   min.node.size = c(1, 5, 10)
 )
 
-simple_rf_model <- train(
+rf_model <- train(
   Whiff ~ ., 
   data = train_data,
   method = "ranger",
@@ -89,29 +88,4 @@ simple_rf_model <- train(
   importance = 'impurity'
 )
 
-saveRDS(simple_rf_model, "~/Documents/bradygiacopelli/repositories/Capstone/RF_model.rds")
-
-print(simple_rf_model$bestTune)
-best_accuracy <- max(simple_rf_model$results$Accuracy)
-print(paste("Best Accuracy:", best_accuracy))
-
-unique(train_data$TaggedPitchType)
-# Creating a new data frame for the adjusted prediction
-new_pitch <- data.frame(
-  PitchBatSide = as.factor(0),
-  TaggedPitchType = as.factor("Sinker"),
-  RelSpeed = 80,
-  SpinRate = 1600,
-  InducedVertBreak = -5,
-  HorzBreak = 20
-)
-
-# Making the prediction with the adjusted model
-predictions <- predict(simple_rf_model, new_pitch, type="prob")
-
-# Extract probabilities of the class of interest, assuming it's the second column
-prob_whiff <- predictions$Whiff
-
-print(prob_whiff)
-
-
+saveRDS(rf_model, "~/Documents/bradygiacopelli/repositories/Capstone/RF_model.rds")
